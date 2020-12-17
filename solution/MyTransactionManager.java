@@ -94,7 +94,11 @@ public final class MyTransactionManager implements TransactionManager {
 	 * @param rid : id of the resource
 	 * @throws InterruptedException
 	 */
-	private void acquireResource(Long tid, ResourceId rid) throws InterruptedException {
+	private void acquireResource(
+		Long tid,
+		ResourceId rid
+	) throws
+		InterruptedException {
 		if (!transactionResources.get(tid).contains(rid)) {
 			try {
 				deadLockCheckMutex.acquire();
@@ -104,20 +108,20 @@ public final class MyTransactionManager implements TransactionManager {
 			}
 			
 			requestedResource.put(tid, rid);
-			// System.out.println(tid + " request: " + rid); // FIXME: remove
 			
 			Thread threadToCancel = Thread.currentThread();
 			Thread current = Thread.currentThread();
 			Thread nextThread = resourceOwner.get(requestedResource.get(current.getId()));
-			// System.out.println("calling: " + current); // FIXME: remove
-			// System.out.println(current + " " + nextThread); // FIXME: remove
 
 			while (nextThread != null && nextThread.getId() != tid) {
-				if (transactionStart.get(nextThread.getId()) > transactionStart.get(threadToCancel.getId())) {
+				long currentTime = transactionStart.get(nextThread.getId());
+				long threadToCancelTime = transactionStart.get(threadToCancel.getId());
+
+				if (currentTime > threadToCancelTime) {
 					threadToCancel = nextThread;
 				}
 				else if (
-					transactionStart.get(nextThread.getId()) == transactionStart.get(threadToCancel.getId()) &&
+					currentTime == threadToCancelTime &&
 					nextThread.getId() > threadToCancel.getId()
 				) {
 					threadToCancel = nextThread;
@@ -130,13 +134,9 @@ public final class MyTransactionManager implements TransactionManager {
 				else {
 					nextThread = resourceOwner.get(requestedResource.get(current.getId()));
 				}
-				// System.out.println(current + " " + nextThread); // FIXME: remove
 			}
 
-			// System.out.println("ending: " + Thread.currentThread()); // FIXME: remove
-
 			if (nextThread != null) {
-				// System.out.println("Dead lock detected: " + current + " " + nextThread + " " + threadToCancel); // FIXME: remove
 				if (threadToCancel.getId() == tid) {
 					requestedResource.remove(tid);
 					transactionState.replace(tid, TransactionState.ABORTED);
@@ -151,9 +151,7 @@ public final class MyTransactionManager implements TransactionManager {
 			deadLockCheckMutex.release();
 
 			try {
-				// System.out.println(tid + " waiting for: " + rid); // FIXME: remove
 				resourceMutex.get(rid).acquire();
-				// System.out.println(tid + " got: " + rid); // FIXME: remove
 				requestedResource.remove(tid);
 				resourceOwner.put(rid, Thread.currentThread());
 				transactionResources.get(tid).add(rid);
@@ -210,12 +208,11 @@ public final class MyTransactionManager implements TransactionManager {
 		}
 
 		long tid = Thread.currentThread().getId();
+
 		transactionStart.put(tid, timeProvider.getTime());
 		transactionState.put(tid, TransactionState.ONGOING);
 		transactionOperations.put(tid, new Stack<Operation>());
 		transactionResources.put(tid, new HashSet<ResourceId>());
-
-		// System.out.println(Thread.currentThread() + " -> " + tid); // FIXME: remove
 	}
 
 	public void operateOnResourceInCurrentTransaction(
@@ -227,6 +224,9 @@ public final class MyTransactionManager implements TransactionManager {
 		ActiveTransactionAborted,
 		ResourceOperationException,
 		InterruptedException {
+		if (isTransactionAborted()) {
+			throw new ActiveTransactionAborted();
+		}
 		if (!isTransactionActive()) {
 			throw new NoActiveTransactionException();
 		}
@@ -234,16 +234,8 @@ public final class MyTransactionManager implements TransactionManager {
 		if (resource == null) {
 			throw new UnknownResourceIdException(rid);
 		}
-		if (isTransactionAborted()) {
-			throw new ActiveTransactionAborted();
-		}
 		
 		long tid = Thread.currentThread().getId();
-
-		// FIXME: remove
-		for (Resource rrid : resources) {
-			// System.out.println(rrid.getId() + ": " + resourceOwner.get(rrid.getId()));
-		}
 
 		try {
 			acquireResource(tid, rid);
@@ -257,7 +249,6 @@ public final class MyTransactionManager implements TransactionManager {
 			transactionOperations.get(tid).add(new Operation(resource, operation));
 		}
 		catch (ResourceOperationException e) {
-			// transactionState.replace(tid, TransactionState.ABORTED);
 			throw e;
 		}
 	}
@@ -266,14 +257,15 @@ public final class MyTransactionManager implements TransactionManager {
 	) throws
 		NoActiveTransactionException,
 		ActiveTransactionAborted {
-		if (!isTransactionActive()) {
-			throw new NoActiveTransactionException();
-		}
 		if (isTransactionAborted()) {
 			throw new ActiveTransactionAborted();
 		}
+		if (!isTransactionActive()) {
+			throw new NoActiveTransactionException();
+		}
 
 		long tid = Thread.currentThread().getId();
+
 		try {
 			deadLockCheckMutex.acquire();
 		}
@@ -303,6 +295,7 @@ public final class MyTransactionManager implements TransactionManager {
 
 		transactionStart.remove(tid);
 		transactionState.remove(tid);
+		
 		Stack<Operation> operations = transactionOperations.get(tid);
 		while (operations != null && !operations.empty()) {
 			Operation operation = transactionOperations.get(tid).pop();
@@ -319,7 +312,9 @@ public final class MyTransactionManager implements TransactionManager {
 
 	public boolean isTransactionActive() {
 		long tid = Thread.currentThread().getId();
-		return transactionState.get(tid) == TransactionState.ONGOING;
+		return
+			transactionState.get(tid) == TransactionState.ONGOING ||
+			isTransactionAborted();
 	}
 
 	public boolean isTransactionAborted() {
