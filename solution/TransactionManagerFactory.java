@@ -12,6 +12,7 @@ import java.util.Collection;
 import cp1.base.TransactionManager;
 import cp1.base.LocalTimeProvider;
 import cp1.base.Resource;
+import cp1.solution.MyTransactionManager;
 
 /**
  * A factory for instantiating transaction managers.
@@ -31,12 +32,11 @@ public final class TransactionManagerFactory {
 	 * @return A new transaction manager for
 	 *     controlling the resources.
 	 */
-	public final static TransactionManager newTM(
+	public final static MyTransactionManager newTM(
 			Collection<Resource> resources,
 			LocalTimeProvider timeProvider
 	) {
-		// FIXME: implement
-		throw new AssertionError("UNIMPLEMENTED!");
+		return new MyTransactionManager(resources, timeProvider);
 	}
 	
 }

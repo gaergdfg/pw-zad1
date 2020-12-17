@@ -9,6 +9,7 @@ package cp1.solution;
 
 import java.util.Collection;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
 import java.util.Set;
 import java.util.HashSet;
 import java.util.Stack;
@@ -29,9 +30,7 @@ import cp1.base.UnknownResourceIdException;
  * 
  * @author Piotr Prabucki
  */
-// TODO: Change the name
-// TODO: Change the name in `TransactionManagerFactory.java`
-public final class Placeholder implements TransactionManager {
+public final class MyTransactionManager implements TransactionManager {
 
 	/**
 	 * Class representing a single operation of a transaction, containing
@@ -40,8 +39,8 @@ public final class Placeholder implements TransactionManager {
 	 */
 	private final class Operation {
 		
-		Resource resource;
-		ResourceOperation resourceOperation;
+		private Resource resource;
+		private ResourceOperation resourceOperation;
 
 		public Operation(
 			Resource resource,
@@ -58,6 +57,7 @@ public final class Placeholder implements TransactionManager {
 		public ResourceOperation getResourceOperation() {
 			return resourceOperation;
 		}
+
 	}
 
 	/**
@@ -68,26 +68,110 @@ public final class Placeholder implements TransactionManager {
 		ABORTED
 	}
 
-	Collection<Resource> resources;
-	LocalTimeProvider timeProvider;
+	private Collection<Resource> resources;
+	private LocalTimeProvider timeProvider;
 
-	ConcurrentHashMap<Long, Long> transactionStart;
-	ConcurrentHashMap<Long, TransactionState> transactionState;
-	ConcurrentHashMap<Long, Stack<Operation>> transactionOperations;
-	ConcurrentHashMap<Long, Set<ResourceId>> transactionResources;
-	ConcurrentHashMap<ResourceId, Long> resourceOwner;
+	private ConcurrentHashMap<Long, Long> transactionStart;
+	private ConcurrentHashMap<Long, TransactionState> transactionState;
+	private ConcurrentHashMap<Long, Stack<Operation>> transactionOperations;
+	private ConcurrentHashMap<Long, Set<ResourceId>> transactionResources;
+	private ConcurrentHashMap<ResourceId, Thread> resourceOwner;
+	private ConcurrentHashMap<Long, ResourceId> requestedResource;
+	private ConcurrentHashMap<ResourceId, Semaphore> resourceMutex;
 
-	public Placeholder(
+	private Semaphore deadLockCheckMutex;
+
+	// TODO: change the name
+	private void GEMACHT(Long tid, ResourceId rid) throws InterruptedException {
+		if (!transactionResources.get(tid).contains(rid)) {
+			try {
+				deadLockCheckMutex.acquire();
+			}
+			catch (Exception e) {
+				return;
+			}
+			
+			requestedResource.put(tid, rid);
+			
+			Thread threadToCancel = Thread.currentThread();
+			Thread current = Thread.currentThread();
+			Thread nextThread = resourceOwner.get(requestedResource.get(current.getId()));
+
+			while (nextThread != null && nextThread.getId() != tid) {
+				if (transactionStart.get(nextThread.getId()) < transactionStart.get(threadToCancel.getId())) {
+					threadToCancel = current;
+				}
+				else if (
+					transactionStart.get(nextThread.getId()) == transactionStart.get(threadToCancel.getId()) &&
+					nextThread.getId() < threadToCancel.getId()
+				) {
+					threadToCancel = current;
+				}
+
+				current = nextThread;
+				nextThread = resourceOwner.get(requestedResource.get(current.getId()));
+			}
+
+			if (nextThread != null) {
+				if (threadToCancel.getId() == tid) {
+					requestedResource.remove(tid);
+					transactionState.replace(tid, TransactionState.ABORTED);
+					deadLockCheckMutex.release();
+					return;
+				}
+				else {
+					transactionState.replace(threadToCancel.getId(), TransactionState.ABORTED);
+					threadToCancel.interrupt();
+				}
+			}
+			deadLockCheckMutex.release();
+
+			try {
+				resourceMutex.get(rid).acquire();
+				transactionResources.get(tid).add(rid);
+			}
+			catch (InterruptedException e) {
+				throw e;
+			}
+		}
+	}
+
+	/**
+	 * Releases a permit to each of thread's resources semaphores.
+	 * Erases data about the connections.
+	 * @param tid : id of the thread
+	 */
+	private void releaseResources(long tid) {
+		if (transactionResources.get(tid) == null) {
+			return;
+		}
+
+		for (ResourceId rid : transactionResources.get(tid)) {
+			resourceOwner.remove(rid);
+			resourceMutex.get(rid).release();
+		}
+		transactionResources.remove(tid);
+	}
+
+	public MyTransactionManager(
 		Collection<Resource> resources,
 		LocalTimeProvider timeProvider
 	) {
 		this.resources = resources;
 		this.timeProvider = timeProvider;
+
 		transactionStart = new ConcurrentHashMap<>();
 		transactionState = new ConcurrentHashMap<>();
 		transactionOperations = new ConcurrentHashMap<>();
 		transactionResources = new ConcurrentHashMap<>();
 		resourceOwner = new ConcurrentHashMap<>();
+		requestedResource = new ConcurrentHashMap<>();
+		resourceMutex = new ConcurrentHashMap<>();
+		for (Resource resource : resources) {
+			resourceMutex.put(resource.getId(), new Semaphore(1, true));
+		}
+
+		deadLockCheckMutex = new Semaphore(1, true);
 	}
 
 	public void startTransaction(
@@ -124,9 +208,22 @@ public final class Placeholder implements TransactionManager {
 			throw new ActiveTransactionAborted();
 		}
 		
-		// TODO: do different kind of magic
-		// mapa <resourceId, Collection<Long>> - kolekcja czekajacych na resource
-		// wait() and notify() dla watkow czekajacych na dany resource
+		long tid = Thread.currentThread().getId();
+		try {
+			GEMACHT(tid, rid);
+		}
+		catch (InterruptedException e) {
+			throw e;
+		}
+
+		try {
+			operation.execute(resource);
+			transactionOperations.get(tid).add(new Operation(resource, operation));
+		}
+		catch (ResourceOperationException e) {
+			transactionState.replace(tid, TransactionState.ABORTED);
+			throw e;
+		}
 	}
 
 	public void commitCurrentTransaction(
@@ -141,11 +238,19 @@ public final class Placeholder implements TransactionManager {
 		}
 
 		long tid = Thread.currentThread().getId();
-		transactionStart.remove(tid);
-		transactionOperations.remove(tid);
-		// TODO: unlink all resources from thread
+		try {
+			deadLockCheckMutex.acquire();
+		}
+		catch (Exception e) {
+			return;
+		}
 
+		transactionStart.remove(tid);
 		transactionState.remove(tid);
+		transactionOperations.remove(tid);
+		releaseResources(tid);
+
+		deadLockCheckMutex.release();
 	}
 
 	public void rollbackCurrentTransaction() {
@@ -153,9 +258,17 @@ public final class Placeholder implements TransactionManager {
 		if (transactionStart.contains(tid)) {
 			return;
 		}
+		try {
+			deadLockCheckMutex.acquire();
+		}
+		catch (Exception e) {
+			return;
+		}
 
 		transactionStart.remove(tid);
-		while (!transactionOperations.get(tid).empty()) {
+		transactionState.remove(tid);
+		Stack<Operation> operations = transactionOperations.get(tid);
+		while (operations != null && !operations.empty()) {
 			Operation operation = transactionOperations.get(tid).pop();
 			Resource resource = operation.getResource();
 			ResourceOperation resourceOperation =
@@ -163,9 +276,9 @@ public final class Placeholder implements TransactionManager {
 			
 			resourceOperation.undo(resource);
 		}
-		// TODO: unlink all resources from thread
+		releaseResources(tid);
 		
-		transactionState.remove(tid);
+		deadLockCheckMutex.release();
 	}
 
 	public boolean isTransactionActive() {
@@ -181,7 +294,7 @@ public final class Placeholder implements TransactionManager {
 	/**
 	 * Finds a resource with id equal to [rid].
 	 * @param rid : id of the resource
-	 * @return Resource with a matching id or null.
+	 * @return Resource with a matching id or null if there is no such resource.
 	 */
 	private Resource findResourceById(ResourceId rid) {
 		for (Resource resource : resources) {
