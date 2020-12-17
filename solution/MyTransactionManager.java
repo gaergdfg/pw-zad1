@@ -151,7 +151,9 @@ public final class MyTransactionManager implements TransactionManager {
 			deadLockCheckMutex.release();
 
 			try {
+				// System.out.println(tid + " waiting for: " + rid); // FIXME: remove
 				resourceMutex.get(rid).acquire();
+				// System.out.println(tid + " got: " + rid); // FIXME: remove
 				requestedResource.remove(tid);
 				resourceOwner.put(rid, Thread.currentThread());
 				transactionResources.get(tid).add(rid);
@@ -240,7 +242,6 @@ public final class MyTransactionManager implements TransactionManager {
 
 		// FIXME: remove
 		for (Resource rrid : resources) {
-			System.out.println(rrid.getId() + ": " + (resourceOwner.get(rrid.getId()) != null ? resourceOwner.get(rrid.getId()).getId() : null));
 			// System.out.println(rrid.getId() + ": " + resourceOwner.get(rrid.getId()));
 		}
 
@@ -256,7 +257,7 @@ public final class MyTransactionManager implements TransactionManager {
 			transactionOperations.get(tid).add(new Operation(resource, operation));
 		}
 		catch (ResourceOperationException e) {
-			transactionState.replace(tid, TransactionState.ABORTED);
+			// transactionState.replace(tid, TransactionState.ABORTED);
 			throw e;
 		}
 	}
