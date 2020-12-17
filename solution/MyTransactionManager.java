@@ -81,8 +81,20 @@ public final class MyTransactionManager implements TransactionManager {
 
 	private Semaphore deadLockCheckMutex;
 
-	// TODO: change the name
-	private void GEMACHT(Long tid, ResourceId rid) throws InterruptedException {
+	/**
+	 * Acquires resource for a thread.
+	 * Thread gets the resource immediately if the resource was used earlier in
+	 * its transaction.
+	 * Otherwise, if requesting the resource would result in a dead lock,
+	 * one thread (specified in the task description) gets interrupted and its
+	 * transaction aborted.
+	 * If thread's transaction wasn't aborted in this action, it acquires the
+	 * resource's semaphore.
+	 * @param tid : id of the thread
+	 * @param rid : id of the resource
+	 * @throws InterruptedException
+	 */
+	private void acquireResource(Long tid, ResourceId rid) throws InterruptedException {
 		if (!transactionResources.get(tid).contains(rid)) {
 			try {
 				deadLockCheckMutex.acquire();
@@ -92,27 +104,39 @@ public final class MyTransactionManager implements TransactionManager {
 			}
 			
 			requestedResource.put(tid, rid);
+			// System.out.println(tid + " request: " + rid); // FIXME: remove
 			
 			Thread threadToCancel = Thread.currentThread();
 			Thread current = Thread.currentThread();
 			Thread nextThread = resourceOwner.get(requestedResource.get(current.getId()));
+			// System.out.println("calling: " + current); // FIXME: remove
+			// System.out.println(current + " " + nextThread); // FIXME: remove
 
 			while (nextThread != null && nextThread.getId() != tid) {
-				if (transactionStart.get(nextThread.getId()) < transactionStart.get(threadToCancel.getId())) {
-					threadToCancel = current;
+				if (transactionStart.get(nextThread.getId()) > transactionStart.get(threadToCancel.getId())) {
+					threadToCancel = nextThread;
 				}
 				else if (
 					transactionStart.get(nextThread.getId()) == transactionStart.get(threadToCancel.getId()) &&
-					nextThread.getId() < threadToCancel.getId()
+					nextThread.getId() > threadToCancel.getId()
 				) {
-					threadToCancel = current;
+					threadToCancel = nextThread;
 				}
 
 				current = nextThread;
-				nextThread = resourceOwner.get(requestedResource.get(current.getId()));
+				if (requestedResource.get(current.getId()) == null) {
+					nextThread = null;
+				}
+				else {
+					nextThread = resourceOwner.get(requestedResource.get(current.getId()));
+				}
+				// System.out.println(current + " " + nextThread); // FIXME: remove
 			}
 
+			// System.out.println("ending: " + Thread.currentThread()); // FIXME: remove
+
 			if (nextThread != null) {
+				// System.out.println("Dead lock detected: " + current + " " + nextThread + " " + threadToCancel); // FIXME: remove
 				if (threadToCancel.getId() == tid) {
 					requestedResource.remove(tid);
 					transactionState.replace(tid, TransactionState.ABORTED);
@@ -128,6 +152,8 @@ public final class MyTransactionManager implements TransactionManager {
 
 			try {
 				resourceMutex.get(rid).acquire();
+				requestedResource.remove(tid);
+				resourceOwner.put(rid, Thread.currentThread());
 				transactionResources.get(tid).add(rid);
 			}
 			catch (InterruptedException e) {
@@ -186,6 +212,8 @@ public final class MyTransactionManager implements TransactionManager {
 		transactionState.put(tid, TransactionState.ONGOING);
 		transactionOperations.put(tid, new Stack<Operation>());
 		transactionResources.put(tid, new HashSet<ResourceId>());
+
+		// System.out.println(Thread.currentThread() + " -> " + tid); // FIXME: remove
 	}
 
 	public void operateOnResourceInCurrentTransaction(
@@ -209,8 +237,15 @@ public final class MyTransactionManager implements TransactionManager {
 		}
 		
 		long tid = Thread.currentThread().getId();
+
+		// FIXME: remove
+		for (Resource rrid : resources) {
+			System.out.println(rrid.getId() + ": " + (resourceOwner.get(rrid.getId()) != null ? resourceOwner.get(rrid.getId()).getId() : null));
+			// System.out.println(rrid.getId() + ": " + resourceOwner.get(rrid.getId()));
+		}
+
 		try {
-			GEMACHT(tid, rid);
+			acquireResource(tid, rid);
 		}
 		catch (InterruptedException e) {
 			throw e;

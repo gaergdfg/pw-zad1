@@ -1,1 +1,6 @@
 *.class
+
+# tests
+demo/README.txt
+demo/*.in
+demo/Transactions2.java
